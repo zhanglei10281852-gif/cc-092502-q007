@@ -8,6 +8,9 @@ from app.database import close_connection, connection, init_db
 from app.schemas import JobCreate, JobFinish, LoginRequest, MemberCreate, ProjectCreate, UserCreate
 from app.service import ResearchService, ServiceError
 
+from app.catalog_routes import router as catalog_router
+from app.catalog_service import CatalogError
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,10 +21,18 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="考古研究协作基础服务", version="1.0.0", lifespan=lifespan)
+app.include_router(catalog_router)
 
 
 @app.exception_handler(ServiceError)
 async def handle_service_error(request, exc: ServiceError):
+    del request
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}})
+
+
+@app.exception_handler(CatalogError)
+async def handle_catalog_error(request, exc: CatalogError):
     del request
     from fastapi.responses import JSONResponse
     return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}})
