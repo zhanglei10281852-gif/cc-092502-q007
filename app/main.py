@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, Query
 
+from app.catalog.routes import router as catalog_router
+from app.catalog.schema import ensure_catalog_schema
 from app.database import close_connection, connection, init_db
+from app.deps import current_user
 from app.schemas import JobCreate, JobFinish, LoginRequest, MemberCreate, ProjectCreate, UserCreate
 from app.service import ResearchService, ServiceError
 
@@ -13,24 +16,21 @@ from app.service import ResearchService, ServiceError
 async def lifespan(app: FastAPI):
     del app
     init_db()
+    ensure_catalog_schema()
     yield
     close_connection()
 
 
 app = FastAPI(title="考古研究协作基础服务", version="1.0.0", lifespan=lifespan)
+app.include_router(catalog_router)
 
 
 @app.exception_handler(ServiceError)
 async def handle_service_error(request, exc: ServiceError):
     del request
     from fastapi.responses import JSONResponse
-    return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message}})
 
-
-def current_user(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(401, "缺少 Bearer 会话")
-    return ResearchService().authenticate(authorization[7:])
+    return JSONResponse(status_code=exc.status, content={"error": {"code": exc.code, "message": exc.message, "details": exc.details}})
 
 
 @app.get("/")

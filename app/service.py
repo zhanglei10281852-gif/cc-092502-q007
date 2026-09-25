@@ -6,13 +6,33 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.database import connection, now, transaction
-from app.security import expiry, issue_token, password_hash, request_hash, sanitize, stable_json, token_hash, verify_password
+from app.security import chain_hash, expiry, issue_token, password_hash, request_hash, sanitize, stable_json, token_hash, verify_password
 
 
 class ServiceError(Exception):
-    def __init__(self, code: str, message: str, status: int = 400):
-        self.code, self.message, self.status = code, message, status
+    def __init__(self, code: str, message: str, status: int = 400, details: dict[str, Any] | None = None):
+        self.code, self.message, self.status, self.details = code, message, status, details or {}
         super().__init__(message)
+
+
+def verify_audit_chain(db: sqlite3.Connection) -> dict[str, Any]:
+    """重放审计哈希链，校验审计记录未被篡改或重排。"""
+    previous = ""
+    rows = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()
+    for row in rows:
+        fields = {
+            "project_id": row["project_id"],
+            "actor_id": row["actor_id"],
+            "action": row["action"],
+            "resource_type": row["resource_type"],
+            "resource_id": row["resource_id"],
+            "payload_json": row["payload_json"],
+            "created_at": row["created_at"],
+        }
+        if row["prev_hash"] != previous or row["hash"] != chain_hash(previous, fields):
+            return {"events": len(rows), "intact": False, "first_bad_id": row["id"]}
+        previous = row["hash"]
+    return {"events": len(rows), "intact": True, "first_bad_id": None}
 
 
 class ResearchService:
@@ -20,9 +40,22 @@ class ResearchService:
         self.db = db or connection()
 
     def audit(self, action: str, resource_type: str, resource_id: str, payload: dict[str, Any], *, project_id: int | None = None, actor_id: int | None = None) -> None:
+        payload_json = stable_json(sanitize(payload))
+        stamp = now()
+        previous_row = self.db.execute("SELECT hash FROM audit_events ORDER BY id DESC LIMIT 1").fetchone()
+        previous = previous_row["hash"] if previous_row else ""
+        fields = {
+            "project_id": project_id,
+            "actor_id": actor_id,
+            "action": action,
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "payload_json": payload_json,
+            "created_at": stamp,
+        }
         self.db.execute(
-            "INSERT INTO audit_events(project_id,actor_id,action,resource_type,resource_id,payload_json,created_at) VALUES(?,?,?,?,?,?,?)",
-            (project_id, actor_id, action, resource_type, resource_id, stable_json(sanitize(payload)), now()),
+            "INSERT INTO audit_events(project_id,actor_id,action,resource_type,resource_id,payload_json,prev_hash,hash,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (project_id, actor_id, action, resource_type, resource_id, payload_json, previous, chain_hash(previous, fields), stamp),
         )
 
     def create_user(self, payload: dict[str, Any]) -> dict[str, Any]:

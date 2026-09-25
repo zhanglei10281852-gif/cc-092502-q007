@@ -53,3 +53,8 @@ def stable_json(value: Any) -> str:
 
 def request_hash(value: Any) -> str:
     return hashlib.sha256(stable_json(value).encode()).hexdigest()
+
+
+def chain_hash(prev_hash: str, fields: dict[str, Any]) -> str:
+    """审计/事件哈希链：当前记录摘要 = sha256(前一条摘要 + 规范化字段)。"""
+    return hashlib.sha256((prev_hash + "|" + stable_json(fields)).encode()).hexdigest()

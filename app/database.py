@@ -52,6 +52,8 @@ CREATE TABLE IF NOT EXISTS audit_events (
  resource_type TEXT NOT NULL,
  resource_id TEXT NOT NULL,
  payload_json TEXT NOT NULL DEFAULT '{}',
+ prev_hash TEXT NOT NULL DEFAULT '',
+ hash TEXT NOT NULL DEFAULT '',
  created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS idempotency_records (
@@ -115,6 +117,37 @@ def close_connection() -> None:
 
 def init_db() -> None:
     connection().executescript(SCHEMA)
+    _migrate_audit_chain()
+
+
+def _migrate_audit_chain() -> None:
+    """为旧库补充审计哈希链列并回填摘要；新库的 SCHEMA 已包含这些列。"""
+    db = connection()
+    columns = {row[1] for row in db.execute("PRAGMA table_info(audit_events)")}
+    if "prev_hash" in columns:
+        return
+    from app.security import chain_hash
+
+    db.execute("ALTER TABLE audit_events ADD COLUMN prev_hash TEXT NOT NULL DEFAULT ''")
+    db.execute("ALTER TABLE audit_events ADD COLUMN hash TEXT NOT NULL DEFAULT ''")
+    previous = ""
+    rows = db.execute("SELECT * FROM audit_events ORDER BY id").fetchall()
+    for row in rows:
+        digest = chain_hash(previous, _audit_chain_fields(row))
+        db.execute("UPDATE audit_events SET prev_hash=?, hash=? WHERE id=?", (previous, digest, row["id"]))
+        previous = digest
+
+
+def _audit_chain_fields(row: sqlite3.Row) -> dict:
+    return {
+        "project_id": row["project_id"],
+        "actor_id": row["actor_id"],
+        "action": row["action"],
+        "resource_type": row["resource_type"],
+        "resource_id": row["resource_id"],
+        "payload_json": row["payload_json"],
+        "created_at": row["created_at"],
+    }
 
 
 @contextmanager
